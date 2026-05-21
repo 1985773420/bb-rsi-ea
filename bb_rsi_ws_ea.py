@@ -10,7 +10,7 @@ import datastore as db
 INST_ID = "BTC-USDT-SWAP"
 TP_PCT = 0.008; SL_PCT = 0.004; MAX_BARS = 24; FEE_PCT = 0.0007
 BB_PERIOD = 20; BB_STD = 2; RSI_PERIOD = 7
-RSI_HIGH = 65; RSI_LOW = 35; ATR_VOL_FILTER = 0.5
+RSI_HIGH = 65; RSI_LOW = 35; ATR_VOL_FILTER = 0.6
 POLL_INTERVAL = 3  # REST 轮询间隔(秒) — 实时级别
 
 def get_dynamic_params(balance):
@@ -27,7 +27,7 @@ PROXY = {"http":"http://127.0.0.1:2080","https":"http://127.0.0.1:2080"}
 
 # ===== 全局状态 =====
 candles = []
-in_position = False; last_signal_bar = 0; lock = threading.Lock()
+in_position = False; last_signal_ts = 0; lock = threading.Lock()
 daily_pnl = 0.0; last_day = None
 trade_history = []
 weekly_pnl = 0.0; current_week = None; consecutive_losing_weeks = 0
@@ -126,12 +126,16 @@ def check_signal():
 
 # ==================== OKX 交互 ====================
 def okx_cli(*args):
-    cmd = [OKX_BIN,"--live","--json"] + list(args)
-    r = subprocess.run(cmd,capture_output=True,text=True,timeout=60,env=OKX_ENV)
-    output = r.stdout.strip()
-    if output.startswith("Update available"): output = output.split("\n",1)[-1].strip()
-    try: return json.loads(output)
-    except: return None
+    try:
+        cmd = [OKX_BIN,"--live","--json"] + list(args)
+        r = subprocess.run(cmd,capture_output=True,text=True,timeout=60,env=OKX_ENV)
+        output = r.stdout.strip()
+        if output.startswith("Update available"): output = output.split("\n",1)[-1].strip()
+        try: return json.loads(output)
+        except: return None
+    except Exception as e:
+        log(f"[CLI] {e}")
+        return None
 
 def send_wechat(title, content):
     try:
@@ -189,13 +193,23 @@ def sync_position_state():
         entry_balance = 0
         return False
 
+def cancel_all_orders():
+    result = okx_cli("swap","orders","--instId",INST_ID)
+    if result and isinstance(result,list):
+        for o in result:
+            if isinstance(o,dict) and o.get("state")=="live":
+                okx_cli("swap","cancel","--instId",INST_ID,"--ordId",o["ordId"])
+
 # ==================== 执行 ====================
 def execute_signal(signal, signal_idx):
-    global in_position, last_signal_bar, entry_balance, last_pos_state
+    global in_position, last_signal_ts, entry_balance, last_pos_state
     sync_position_state()
     if in_position: return
+    cancel_all_orders()
     if daily_pnl < -0.15: return
-    if signal_idx == last_signal_bar: return
+    # 用时间戳比较，避免蜡烛数组刷新后索引变化
+    with lock: sig_ts = candles[signal_idx]["ts"] if signal_idx < len(candles) else 0
+    if sig_ts == last_signal_ts: return
 
     with lock: entry_px = candles[signal_idx]["c"]
     balance = get_balance()
@@ -218,7 +232,7 @@ def execute_signal(signal, signal_idx):
 
     result = okx_cli(*args)
     if result and isinstance(result,list) and len(result)>0 and result[0].get("sCode")=="0":
-        in_position = True; last_signal_bar = signal_idx
+        in_position = True; last_signal_ts = candles[signal_idx]["ts"]
         entry_balance = balance
         last_pos_state = {"side":signal,"size":sz,"entry_px":entry_px}
         msg = f"BB+RSI v6 {signal} {sz}张\n入场:{entry_px:.1f} TP:{tp_px} SL:{sl_px}\n保证金${margin_use:.0f} @{dlev}x"
@@ -328,7 +342,15 @@ def main_loop():
 
 def main():
     global candles
-    log(f"EA v6 启动 | REST轮询间隔={POLL_INTERVAL}s (实时)")
+    # PID锁：防止重复启动
+    import fcntl
+    pid_file = open("/tmp/bb_rsi_ea.pid", "w")
+    try:
+        fcntl.flock(pid_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except IOError:
+        log("EA已在运行中(PID锁被占用)，退出")
+        return
+    log(f"EA v6 启动 | REST轮询间隔=3s (实时)")
 
     # 初始化
     if load_initial():

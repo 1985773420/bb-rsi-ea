@@ -25,24 +25,27 @@ def main():
     log("看门狗 v6 启动")
 
     while True:
-        # EA检查：进程死了就重启
-        need_restart = False
-        if ws_proc is None:
-            need_restart = True
-        elif ws_proc.poll() is not None:
-            log(f"EA 退出(rc={ws_proc.returncode})，重启")
-            need_restart = True
+        try:
+            # EA检查：进程死了就重启
+            need_restart = False
+            if ws_proc is None:
+                need_restart = True
+            elif ws_proc.poll() is not None:
+                log(f"EA 退出(rc={ws_proc.returncode})，重启")
+                need_restart = True
 
-        if need_restart:
-            ws_proc = subprocess.Popen([PYTHON, "-u", WS_SCRIPT], preexec_fn=os.setsid)
-            ws_start = time.time()
-            log(f"EA PID={ws_proc.pid}")
+            if need_restart:
+                ws_proc = subprocess.Popen([PYTHON, "-u", WS_SCRIPT], preexec_fn=os.setsid)
+                ws_start = time.time()
+                log(f"EA PID={ws_proc.pid}")
 
-        # Dashboard
-        if dash_proc is None or dash_proc.poll() is not None:
-            if dash_proc: log("Dashboard退出，重启")
-            dash_proc = subprocess.Popen([PYTHON, "-u", DASH_SCRIPT])
-            log(f"DB PID={dash_proc.pid}")
+            # Dashboard
+            if dash_proc is None or dash_proc.poll() is not None:
+                if dash_proc: log("Dashboard退出，重启")
+                dash_proc = subprocess.Popen([PYTHON, "-u", DASH_SCRIPT])
+                log(f"DB PID={dash_proc.pid}")
+        except Exception as e:
+            log(f"看门狗异常: {e}，5秒后重试")
 
         time.sleep(CHECK_INTERVAL)
 
