@@ -10,7 +10,7 @@ import datastore as db
 INST_ID = "BTC-USDT-SWAP"
 TP_PCT = 0.008; SL_PCT = 0.004; MAX_BARS = 24; FEE_PCT = 0.0007
 BB_PERIOD = 20; BB_STD = 2; RSI_PERIOD = 7
-RSI_HIGH = 65; RSI_LOW = 35; ATR_VOL_FILTER = 0.6
+RSI_HIGH = 65; RSI_LOW = 35; ATR_VOL_FILTER = 0.4
 POLL_INTERVAL = 3  # REST 轮询间隔(秒) — 实时级别
 
 def get_dynamic_params(balance):
@@ -70,10 +70,10 @@ def store_completed_candles(bars):
     if completed:
         db.insert_candles(completed)
 
-def load_initial():
-    """启动时从SQLite加载历史数据"""
+def load_candles_from_db():
+    """从 SQLite 加载最近300根到内存"""
     global candles
-    bars = db.get_recent(500)
+    bars = db.get_recent(300)
     if bars:
         # 标记为已完成
         for b in bars: b["confirmed"] = True
@@ -226,7 +226,7 @@ def execute_signal(signal, signal_idx):
         tp_px = round(entry_px*(1+TP_PCT),1); sl_px = round(entry_px*(1-SL_PCT),1); side = "buy"
 
     args = ["swap","place","--instId",INST_ID,"--side",side,"--sz",str(sz),
-            "--ordType","limit","--px",str(entry_px),"--tdMode","isolated"]
+            "--ordType","market","--tdMode","isolated"]
     if tp_px: args += ["--tpTriggerPx",str(tp_px),"--tpOrdPx=-1"]
     if sl_px: args += ["--slTriggerPx",str(sl_px),"--slOrdPx=-1"]
 
