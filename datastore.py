@@ -161,5 +161,83 @@ def get_last_update_time():
         return datetime.fromtimestamp(row[0]/1000).strftime("%Y-%m-%d %H:%M")
     return "无数据"
 
+# ==================== 交易记录 ====================
+def init_trades_table():
+    conn = _get_conn()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entry_ts INTEGER NOT NULL,
+            exit_ts INTEGER,
+            side TEXT NOT NULL,
+            entry_px REAL NOT NULL,
+            exit_px REAL,
+            size REAL DEFAULT 0,
+            pnl_pct REAL DEFAULT 0,
+            pnl_usd REAL DEFAULT 0,
+            fee_usd REAL DEFAULT 0,
+            slippage_usd REAL DEFAULT 0,
+            reason TEXT DEFAULT '',
+            balance_before REAL DEFAULT 0,
+            balance_after REAL DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now'))
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def insert_trade(entry_ts, entry_px, side, size, balance_before):
+    conn = _get_conn()
+    cur = conn.execute(
+        "INSERT INTO trades(entry_ts,entry_px,side,size,balance_before) VALUES(?,?,?,?,?)",
+        (entry_ts, entry_px, side, size, balance_before)
+    )
+    tid = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return tid
+
+def close_trade(trade_id, exit_ts, exit_px, pnl_pct, pnl_usd, fee_usd, slippage_usd, reason, balance_after):
+    conn = _get_conn()
+    conn.execute(
+        "UPDATE trades SET exit_ts=?,exit_px=?,pnl_pct=?,pnl_usd=?,fee_usd=?,slippage_usd=?,reason=?,balance_after=? WHERE id=?",
+        (exit_ts, exit_px, pnl_pct, pnl_usd, fee_usd, slippage_usd, reason, balance_after, trade_id)
+    )
+    conn.commit()
+    conn.close()
+
+def get_trades(limit=50):
+    conn = _get_conn()
+    cur = conn.execute("SELECT * FROM trades ORDER BY id DESC LIMIT ?", (limit,))
+    rows = cur.fetchall()
+    conn.close()
+    cols = ["id","entry_ts","exit_ts","side","entry_px","exit_px","size",
+            "pnl_pct","pnl_usd","fee_usd","slippage_usd","reason","balance_before","balance_after","created_at"]
+    return [dict(zip(cols, r)) for r in reversed(rows)]
+
+def get_trade_stats():
+    conn = _get_conn()
+    cur = conn.execute("""
+        SELECT COUNT(*), 
+               SUM(CASE WHEN pnl_usd>0 THEN 1 ELSE 0 END),
+               SUM(pnl_usd), SUM(fee_usd), SUM(slippage_usd),
+               AVG(CASE WHEN pnl_pct>0 THEN pnl_pct END),
+               AVG(CASE WHEN pnl_pct<0 THEN pnl_pct END)
+        FROM trades WHERE reason!=''
+    """)
+    row = cur.fetchone()
+    conn.close()
+    if not row or row[0]==0:
+        return {"total":0,"wins":0,"total_pnl":0,"total_fee":0,"total_slip":0,"avg_win":0,"avg_loss":0}
+    return {
+        "total": row[0], "wins": row[1] or 0,
+        "total_pnl": round(row[2] or 0, 4),
+        "total_fee": round(row[3] or 0, 4),
+        "total_slip": round(row[4] or 0, 4),
+        "avg_win": round(row[5] or 0, 6),
+        "avg_loss": round(row[6] or 0, 6)
+    }
+
 # ==== 初始化 ====
 init_db()
+init_trades_table()

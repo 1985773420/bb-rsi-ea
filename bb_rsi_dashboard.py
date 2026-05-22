@@ -66,6 +66,19 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps(read_backtest()).encode())
             return
 
+        if self.path == "/api/trades":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            try:
+                import datastore as db
+                trades = db.get_trades(100)
+                stats = db.get_trade_stats()
+                self.wfile.write(json.dumps({"trades": trades, "stats": stats}).encode())
+            except Exception as e:
+                self.wfile.write(json.dumps({"trades": [], "error": str(e)}).encode())
+            return
+
         if self.path == "/" or self.path == "/index.html":
             state = read_state()
             bt = read_backtest()
@@ -86,9 +99,54 @@ class Handler(BaseHTTPRequestHandler):
                 </div>"""
 
             trade_rows = ""
+            # 从DB读取交易记录
+            try:
+                import datastore as db
+                db_trades = db.get_trades(50)
+                db_stats = db.get_trade_stats()
+            except:
+                db_trades = []
+                db_stats = {"total": 0}
+
+            # 统计卡片
+            if db_stats["total"] > 0:
+                trade_rows += f"""
+                <div class="card">
+                    <h3>📊 交易统计 (DB记录)</h3>
+                    <div class="stat"><span class="label">总交易</span><span class="value">{db_stats['total']}笔</span></div>
+                    <div class="stat"><span class="label">胜率</span><span class="value">{db_stats['wins']/db_stats['total']*100:.0f}%</span></div>
+                    <div class="stat"><span class="label">总盈亏</span><span class="value {'green' if db_stats['total_pnl']>0 else 'red'}">${db_stats['total_pnl']:+.2f}</span></div>
+                    <div class="stat"><span class="label">手续费</span><span class="value red">-${db_stats['total_fee']:.4f}</span></div>
+                    <div class="stat"><span class="label">滑点</span><span class="value red">-${db_stats['total_slip']:.4f}</span></div>
+                    <div class="stat"><span class="label">平均盈利</span><span class="value green">{db_stats['avg_win']*100:+.2f}%</span></div>
+                    <div class="stat"><span class="label">平均亏损</span><span class="value red">{db_stats['avg_loss']*100:+.2f}%</span></div>
+                </div>"""
+
+            # DB交易明细
+            if db_trades:
+                trade_rows += '<div class="card"><h3>📋 历史交易明细</h3><table><tr><th>时间</th><th>方向</th><th>入场</th><th>出场</th><th>盈亏%</th><th>盈亏$</th><th>费用$</th><th>原因</th></tr>'
+                for td in db_trades:
+                    if not td.get("reason"): continue
+                    entry_dt = datetime.fromtimestamp(td["entry_ts"]/1000).strftime("%m/%d %H:%M") if td["entry_ts"] else "?"
+                    exit_dt = datetime.fromtimestamp(td["exit_ts"]/1000).strftime("%m/%d %H:%M") if td["exit_ts"] else "?"
+                    c = "#4caf50" if (td.get("pnl_usd") or 0) > 0 else "#f44336"
+                    trade_rows += f"""<tr>
+                        <td>{exit_dt}</td><td>{td['side']}</td>
+                        <td>{td['entry_px']:.0f}</td><td>{td.get('exit_px','?')}</td>
+                        <td style='color:{c}'>{td['pnl_pct']*100:+.2f}%</td>
+                        <td style='color:{c}'>${td['pnl_usd']:+.2f}</td>
+                        <td style='color:#d73a49'>${(td.get('fee_usd',0)+td.get('slippage_usd',0)):.4f}</td>
+                        <td>{td['reason']}</td></tr>"""
+                trade_rows += "</table></div>"
+
+            # 内存中的活跃交易(DB未关的)
+            mem_trades = []
             for t in reversed(trades):
-                c = "#4caf50" if t["pnl"] > 0 else "#f44336"
-                trade_rows += f"<tr><td>{t['time']}</td><td>{t['side']}</td><td style='color:{c}'>{t['pnl']*100:+.2f}%</td><td>{t['reason']}</td></tr>"
+                if t["reason"] != "OPEN":
+                    c = "#4caf50" if t["pnl"] > 0 else "#f44336"
+                    mem_trades.append(f"<tr><td>{t['time']}</td><td>{t['side']}</td><td>{t['entry']:.0f}</td><td>—</td><td style='color:{c}'>{t['pnl']*100:+.2f}%</td><td>—</td><td>—</td><td>{t['reason']}</td></tr>")
+            if mem_trades:
+                trade_rows += '<div class="card"><h3>📋 内存交易(未入库)</h3><table>' + "".join(mem_trades[-20:]) + "</table></div>"
 
             # 回测数据
             full = bt.get("full_period", {})

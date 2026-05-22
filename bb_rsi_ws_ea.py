@@ -10,14 +10,15 @@ import datastore as db
 INST_ID = "BTC-USDT-SWAP"
 TP_PCT = 0.008; SL_PCT = 0.004; MAX_BARS = 24; FEE_PCT = 0.0007
 BB_PERIOD = 20; BB_STD = 2; RSI_PERIOD = 7
-RSI_HIGH = 65; RSI_LOW = 35; ATR_VOL_FILTER = 0.4
+RSI_HIGH = 68; RSI_LOW = 32; ATR_VOL_FILTER = 0.48
 POLL_INTERVAL = 3  # REST 轮询间隔(秒) — 实时级别
 
 def get_dynamic_params(balance):
-    if balance > 750: return 5, 0.3
-    if balance > 200: return 10, 0.4
-    if balance > 50:  return 15, 0.5
-    return 15, 0.5
+    """基于余额的动态杠杆和保证金"""
+    if balance > 1000: return 5, 0.5
+    elif balance > 500: return 7, 0.6
+    elif balance > 100: return 9, 0.8
+    else: return 15, 0.5
 
 SERVER_CHAN_KEY = "SCT121277TOGysWEkqkfgn2tJJQzDvPfVD"
 STATE_FILE = "/tmp/bb_rsi_state.json"
@@ -28,6 +29,7 @@ PROXY = {"http":"http://127.0.0.1:2080","https":"http://127.0.0.1:2080"}
 # ===== 全局状态 =====
 candles = []
 in_position = False; last_signal_ts = 0; lock = threading.Lock()
+active_trade_id = 0  # 当前活跃交易的DB记录ID
 daily_pnl = 0.0; last_day = None
 trade_history = []
 weekly_pnl = 0.0; current_week = None; consecutive_losing_weeks = 0
@@ -188,6 +190,17 @@ def sync_position_state():
                     "side":last_pos_state["side"],"pnl":round(pnl,4),"reason":"CLOSE","entry":last_pos_state["entry_px"]})
                 log(f"[平仓] {last_pos_state['side']} PnL={pnl*100:+.2f}%")
                 send_wechat(f"BB+RSI平仓 {last_pos_state['side']}",f"盈亏:{pnl*100:+.2f}%")
+
+                # DB记录：平仓
+                global active_trade_id
+                if active_trade_id > 0:
+                    pnl_usd = net_change
+                    fee_usd = entry_cost + exit_cost * 0.7
+                    slip_usd = exit_cost * 0.3
+                    exit_px_est = balance / (last_pos_state["size"] * 0.01) if last_pos_state["size"] > 0 else 0
+                    db.close_trade(active_trade_id, int(time.time()*1000), exit_px_est,
+                                   pnl, pnl_usd, fee_usd, slip_usd, "CLOSE", balance)
+                    active_trade_id = 0
         in_position = False
         last_pos_state = {"side":None,"size":0,"entry_px":0}
         entry_balance = 0
@@ -235,6 +248,9 @@ def execute_signal(signal, signal_idx):
         in_position = True; last_signal_ts = candles[signal_idx]["ts"]
         entry_balance = balance
         last_pos_state = {"side":signal,"size":sz,"entry_px":entry_px}
+        # DB记录：开仓
+        global active_trade_id
+        active_trade_id = db.insert_trade(candles[signal_idx]["ts"], entry_px, signal, sz, balance)
         msg = f"BB+RSI v6 {signal} {sz}张\n入场:{entry_px:.1f} TP:{tp_px} SL:{sl_px}\n保证金${margin_use:.0f} @{dlev}x"
         log(f"[开仓] {signal} {sz}张 @{entry_px:.1f}")
         send_wechat(f"BB+RSI开仓 {signal}", msg)
@@ -327,11 +343,14 @@ def main_loop():
             # 4. 同步持仓
             sync_position_state()
 
+
             # 5. 无持仓时检测信号
             if not in_position and len(candles) >= 50:
                 signal, idx = check_signal()
                 if signal:
-                    log(f"[信号] {signal} idx={idx}")
+                    with lock: sig_ts = candles[idx]["ts"] if idx < len(candles) else 0
+                    if sig_ts != last_signal_ts:
+                        log(f"[信号] {signal} idx={idx}")
                     execute_signal(signal, idx)
 
             # 6. 更新状态
@@ -353,7 +372,7 @@ def main():
     log(f"EA v6 启动 | REST轮询间隔=3s (实时)")
 
     # 初始化
-    if load_initial():
+    if load_candles_from_db():
         log(f"从DB加载 {len(candles)} 根蜡烛")
     else:
         log("DB为空，使用REST加载...")
