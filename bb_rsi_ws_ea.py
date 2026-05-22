@@ -10,7 +10,7 @@ import datastore as db
 INST_ID = "BTC-USDT-SWAP"
 TP_PCT = 0.008; SL_PCT = 0.004; MAX_BARS = 24; FEE_PCT = 0.0007
 BB_PERIOD = 20; BB_STD = 2; RSI_PERIOD = 7
-RSI_HIGH = 68; RSI_LOW = 32; ATR_VOL_FILTER = 0.48
+RSI_HIGH = 65; RSI_LOW = 35; ATR_VOL_FILTER = 0.4
 POLL_INTERVAL = 3  # REST 轮询间隔(秒) — 实时级别
 
 def get_dynamic_params(balance):
